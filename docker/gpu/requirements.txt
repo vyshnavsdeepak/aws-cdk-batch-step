@@ -1,0 +1,5 @@
+torch>=2.0.0
+transformers>=4.30.0
+python-json-logger>=2.0.7
+numpy>=1.24.0
+pillow>=9.5.0

@@ -118,7 +118,7 @@ export class DocAiPipelineStack extends cdk.Stack {
     const gpuComputeEnv = new batch.ManagedEc2EcsComputeEnvironment(this, 'GpuComputeEnv', {
       vpc: this.vpc,
       maxvCpus: props.maxGpuVcpus ?? 16,
-      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.G5, ec2.InstanceSize.XLARGE4)],
+      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.G6E, ec2.InstanceSize.XLARGE12)],
       computeEnvironmentName: 'GpuEnv',
       spot: true,
       allocationStrategy: batch.AllocationStrategy.SPOT_CAPACITY_OPTIMIZED,
@@ -165,6 +165,42 @@ export class DocAiPipelineStack extends cdk.Stack {
           managedPolicies: [
             iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
           ],
+          inlinePolicies: {
+            's3Access': new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: ['s3:GetObject', 's3:ListBucket'],
+                  resources: [
+                    this.sourceBucket.bucketArn,
+                    `${this.sourceBucket.bucketArn}/*`
+                  ],
+                }),
+              ],
+            }),
+            'efsAccess': new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: [
+                    'elasticfilesystem:ClientMount',
+                    'elasticfilesystem:ClientWrite',
+                  ],
+                  resources: [this.fileSystem.fileSystemArn],
+                }),
+              ],
+            }),
+          },
+        }),
+        environment: {
+          SOURCE_BUCKET: this.sourceBucket.bucketName,
+          INPUT_DIRECTORY: 'sfn.JsonPath.stringAt($.directory)',
+          LOG_GROUP: logGroup.logGroupName,
+        },
+        volumes: [volume],
+        logging: ecs.LogDriver.awsLogs({
+          streamPrefix: 'preprocess',
+          logGroup: logGroup,
         }),
       }),
       retryAttempts: 3,
@@ -174,7 +210,7 @@ export class DocAiPipelineStack extends cdk.Stack {
     // Create Step Functions workflow with proper error handling
     const submitPreprocessJob = new tasks.BatchSubmitJob(this, 'SubmitPreprocessJob', {
       jobName: 'preprocess',
-      jobQueueArn: gpuQueue.jobQueueArn,
+      jobQueueArn: cpuQueue.jobQueueArn,
       jobDefinitionArn: preProcessingJobDefinition.jobDefinitionArn,
       integrationPattern: stepfunctions.IntegrationPattern.RUN_JOB,
       resultPath: '$.preprocessOutput',
@@ -207,13 +243,31 @@ export class DocAiPipelineStack extends cdk.Stack {
           managedPolicies: [
             iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
           ],
+          inlinePolicies: {
+            'efsAccess': new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: [
+                    'elasticfilesystem:ClientMount',
+                    'elasticfilesystem:ClientWrite',
+                  ],
+                  resources: [this.fileSystem.fileSystemArn],
+                }),
+              ],
+            }),
+          },
         }),
         environment: {
           LOG_GROUP: logGroup.logGroupName,
         },
-        logging: ecs.LogDriver,
+        volumes: [volume],
+        logging: ecs.LogDriver.awsLogs({
+          streamPrefix: 'gpu',
+          logGroup: logGroup,
+        }),
       }),
-    })
+    });
 
     const submitGpuJob = new tasks.BatchSubmitJob(this, 'SubmitGpuJob', {
       jobName: 'gpu-processing',
@@ -250,13 +304,45 @@ export class DocAiPipelineStack extends cdk.Stack {
           managedPolicies: [
             iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonECSTaskExecutionRolePolicy'),
           ],
+          inlinePolicies: {
+            's3Access': new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: ['s3:PutObject'],
+                  resources: [
+                    this.sourceBucket.bucketArn,
+                    `${this.sourceBucket.bucketArn}/*`
+                  ],
+                }),
+              ],
+            }),
+            'efsAccess': new iam.PolicyDocument({
+              statements: [
+                new iam.PolicyStatement({
+                  effect: iam.Effect.ALLOW,
+                  actions: [
+                    'elasticfilesystem:ClientMount',
+                    'elasticfilesystem:ClientWrite',
+                  ],
+                  resources: [this.fileSystem.fileSystemArn],
+                }),
+              ],
+            }),
+          },
         }),
-        logging: ecs.LogDriver,
         environment: {
+          OUTPUT_BUCKET: this.sourceBucket.bucketName,
+          OUTPUT_PREFIX: 'sfn.JsonPath.stringAt($.directory)',
           LOG_GROUP: logGroup.logGroupName,
         },
+        volumes: [volume],
+        logging: ecs.LogDriver.awsLogs({
+          streamPrefix: 'postprocess',
+          logGroup: logGroup,
+        }),
       }),
-    })
+    });
 
     const submitPostprocessJob = new tasks.BatchSubmitJob(this, 'SubmitPostprocessJob', {
       jobName: 'postprocess',

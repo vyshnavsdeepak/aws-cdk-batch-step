@@ -6,6 +6,7 @@ import logging
 import boto3
 from pathlib import Path
 from pythonjsonlogger import jsonlogger
+import time
 
 # Configure logging
 logger = logging.getLogger()
@@ -60,20 +61,28 @@ def preprocess_files(input_dir: str, output_dir: str):
         # Create output directory if it doesn't exist
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
+        processed_count = 0
         # Process each file in the input directory
         for file_path in Path(input_dir).glob('*'):
             if file_path.is_file():
                 logger.info(f"Processing {file_path}")
                 
-                # Add your preprocessing logic here
-                # For example: format conversion, resizing, etc.
+                # Read the input file
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                
+                # Add preprocessing marker and timestamp
+                processed_content = f"[Preprocessed at {time.strftime('%Y-%m-%d %H:%M:%S')}]\n{content}"
                 
                 # Save processed file
                 output_path = Path(output_dir) / file_path.name
-                # Add your save logic here
+                with open(output_path, 'w') as f:
+                    f.write(processed_content)
                 
-                logger.info(f"Saved processed file to {output_path}")
+                logger.info(f"Saved preprocessed file to {output_path}")
+                processed_count += 1
                 
+        logger.info(f"Preprocessed {processed_count} files")
         return True
     except Exception as e:
         logger.error(f"Error in preprocessing: {str(e)}")

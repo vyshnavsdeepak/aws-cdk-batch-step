@@ -6,6 +6,7 @@ import logging
 import boto3
 from pathlib import Path
 from pythonjsonlogger import jsonlogger
+import time
 
 # Configure logging
 logger = logging.getLogger()
@@ -50,19 +51,28 @@ def postprocess_files(input_dir: str, output_dir: str):
         # Create output directory if it doesn't exist
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
+        processed_count = 0
         # Process each file in the input directory
         for file_path in Path(input_dir).glob('*'):
             if file_path.is_file():
                 logger.info(f"Post-processing {file_path}")
                 
-                # Add your post-processing logic here
-                # For example: formatting, compression, etc.
+                # Read the input file
+                with open(file_path, 'r') as f:
+                    content = f.read()
                 
+                # Add postprocessing marker and timestamp
+                final_content = f"{content}\n[Postprocessed at {time.strftime('%Y-%m-%d %H:%M:%S')}]"
+                
+                # Save processed file
                 output_path = Path(output_dir) / file_path.name
-                # Add your save logic here
+                with open(output_path, 'w') as f:
+                    f.write(final_content)
                 
                 logger.info(f"Saved post-processed file to {output_path}")
+                processed_count += 1
                 
+        logger.info(f"Post-processed {processed_count} files")
         return True
     except Exception as e:
         logger.error(f"Error in post-processing: {str(e)}")

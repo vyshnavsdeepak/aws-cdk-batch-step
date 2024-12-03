@@ -1,0 +1,8 @@
+This is a sample test document for the Document AI Pipeline.
+It will be processed through three stages:
+1. Preprocessing
+2. GPU Processing
+3. Postprocessing
+
+Each stage will add its own timestamp and processing information.
+This helps verify the end-to-end flow of our pipeline.

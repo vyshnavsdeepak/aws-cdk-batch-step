@@ -117,8 +117,8 @@ export class DocAiPipelineStack extends cdk.Stack {
     // Create Batch environment for GPU workloads
     const gpuComputeEnv = new batch.ManagedEc2EcsComputeEnvironment(this, 'GpuComputeEnv', {
       vpc: this.vpc,
-      maxvCpus: props.maxGpuVcpus ?? 16,
-      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.G6E, ec2.InstanceSize.XLARGE12)],
+      maxvCpus: props.maxGpuVcpus ?? 4,
+      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.G4DN, ec2.InstanceSize.XLARGE)],
       computeEnvironmentName: 'GpuEnv',
       spot: true,
       allocationStrategy: batch.AllocationStrategy.SPOT_CAPACITY_OPTIMIZED,

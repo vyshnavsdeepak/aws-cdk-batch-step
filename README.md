@@ -119,6 +119,67 @@ Common issues:
 2. **Job Failures**: Check CloudWatch Logs for specific job logs
 3. **Spot Instance Interruptions**: Jobs automatically retry on new instances
 
+## Testing
+
+The project includes both infrastructure (CDK) tests and pipeline functionality tests.
+
+### Infrastructure Tests
+
+The CDK tests verify that all required AWS resources are properly configured:
+
+```bash
+# Install dependencies
+npm install
+
+# Run CDK tests
+npm test
+```
+
+These tests verify the creation and configuration of:
+- S3 bucket for document storage
+- VPC and networking components
+- EFS filesystem
+- AWS Batch compute environment
+- Step Functions state machine
+- API Gateway endpoints
+- IAM roles and permissions
+
+### Pipeline Tests
+
+The Python tests verify the document processing pipeline functionality:
+
+```bash
+# Install test dependencies
+pip install -r requirements-test.txt
+
+# Run Python tests
+python -m pytest test/test_pipeline.py -v
+```
+
+These tests cover:
+- File creation and management
+- S3 upload functionality
+- Pipeline triggering via API
+- Result processing and verification
+- Error handling scenarios
+
+### Manual Testing
+
+To manually test the pipeline:
+
+```bash
+python test/test_pipeline.py \
+  --api-url "YOUR_API_URL" \
+  --bucket "YOUR_BUCKET_NAME" \
+  --s3-prefix "test-docs"
+```
+
+This will:
+1. Create sample test documents
+2. Upload them to S3
+3. Trigger the processing pipeline
+4. Wait for and verify results
+
 ## Development Commands
 
 * `npm run build`   compile typescript to js

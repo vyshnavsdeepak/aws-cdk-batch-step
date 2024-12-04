@@ -48,11 +48,16 @@ export class DocAiPipelineStack extends cdk.Stack {
       ],
     });
 
-    // Create VPC with isolated subnets for better security
+    // Create VPC with public, private, and isolated subnets
     this.vpc = new ec2.Vpc(this, 'DocAiVPC', {
       maxAzs: 2,
       natGateways: 1,
       subnetConfiguration: [
+        {
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24,
+        },
         {
           name: 'Private',
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,

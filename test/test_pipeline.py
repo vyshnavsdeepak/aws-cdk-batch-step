@@ -6,7 +6,11 @@ import time
 import boto3
 import requests
 import argparse
+import pytest
+import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
+from botocore.exceptions import ClientError
 
 def create_test_files(test_dir: str, num_files: int = 5):
     """Create sample test files"""
@@ -123,6 +127,120 @@ def verify_results(bucket: str, s3_prefix: str, local_dir: str):
         print(f"Error verifying results: {str(e)}")
         return False
 
+class TestDocAIPipeline(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.test_dir = "test_files"
+        cls.bucket = "test-doc-ai-bucket"
+        cls.s3_prefix = "test-docs"
+        cls.api_url = "http://test-api-endpoint/process"
+        
+        # Create test directory if it doesn't exist
+        Path(cls.test_dir).mkdir(parents=True, exist_ok=True)
+
+    def setUp(self):
+        """Set up test fixtures before each test method"""
+        self.s3_client = boto3.client('s3')
+        
+    def tearDown(self):
+        """Clean up after each test"""
+        # Clean up test files
+        for file_path in Path(self.test_dir).glob('*'):
+            if file_path.is_file():
+                file_path.unlink()
+
+    def test_create_test_files(self):
+        """Test creation of sample test files"""
+        num_files = 3
+        create_test_files(self.test_dir, num_files)
+        
+        files = list(Path(self.test_dir).glob('*'))
+        self.assertEqual(len(files), num_files)
+        for file in files:
+            self.assertTrue(file.is_file())
+            self.assertTrue(file.stat().st_size > 0)
+
+    @patch('boto3.client')
+    def test_upload_test_files(self, mock_boto3_client):
+        """Test uploading files to S3"""
+        # Create some test files
+        create_test_files(self.test_dir, 2)
+        
+        # Mock S3 client
+        mock_s3 = Mock()
+        mock_boto3_client.return_value = mock_s3
+        
+        # Test upload
+        upload_test_files(self.test_dir, self.bucket, self.s3_prefix)
+        
+        # Verify S3 upload was called for each file
+        self.assertEqual(mock_s3.upload_file.call_count, 2)
+
+    @patch('requests.post')
+    def test_trigger_processing(self, mock_post):
+        """Test triggering the processing pipeline"""
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"status": "processing", "job_id": "test-job-123"}
+        
+        response = trigger_processing(self.api_url, self.test_dir)
+        self.assertEqual(response["status"], "processing")
+        self.assertEqual(response["job_id"], "test-job-123")
+
+    @patch('boto3.client')
+    def test_wait_for_results(self, mock_boto3_client):
+        """Test waiting for processing results"""
+        # Mock S3 client list_objects response
+        mock_s3 = Mock()
+        mock_s3.list_objects_v2.return_value = {
+            'Contents': [{'Key': f"{self.s3_prefix}/result_1.json"}]
+        }
+        mock_boto3_client.return_value = mock_s3
+        
+        # Test with shorter timeout for testing
+        result = wait_for_results(self.bucket, self.s3_prefix, 1, timeout=5)
+        self.assertTrue(result)
+
+    @patch('boto3.client')
+    def test_verify_results(self, mock_boto3_client):
+        """Test verification of processed results"""
+        # Mock S3 client get_object response
+        mock_s3 = Mock()
+        mock_s3.get_object.return_value = {
+            'Body': Mock(read=lambda: json.dumps({
+                'document_id': 'test_doc_1',
+                'status': 'completed',
+                'results': {'text': 'Sample processed text'}
+            }).encode())
+        }
+        mock_boto3_client.return_value = mock_s3
+        
+        # Create output directory
+        output_dir = Path(self.test_dir) / "results"
+        output_dir.mkdir(exist_ok=True)
+        
+        # Test verification
+        results = verify_results(self.bucket, self.s3_prefix, str(output_dir))
+        self.assertTrue(len(results) > 0)
+        self.assertEqual(results[0]['status'], 'completed')
+
+    def test_error_handling(self):
+        """Test error handling scenarios"""
+        # Test with invalid directory
+        with self.assertRaises(FileNotFoundError):
+            trigger_processing(self.api_url, "invalid_directory")
+        
+        # Test with invalid bucket
+        with patch('boto3.client') as mock_boto3_client:
+            mock_s3 = Mock()
+            mock_s3.upload_file.side_effect = ClientError(
+                {'Error': {'Code': 'NoSuchBucket', 'Message': 'The bucket does not exist'}},
+                'upload_file'
+            )
+            mock_boto3_client.return_value = mock_s3
+            
+            with self.assertRaises(ClientError):
+                upload_test_files(self.test_dir, "invalid-bucket", self.s3_prefix)
+
 def main():
     parser = argparse.ArgumentParser(description='Test Document AI Pipeline')
     parser.add_argument('--api-url', required=True, help='API Gateway URL')
@@ -163,4 +281,5 @@ def main():
     print("\n=== Document AI Pipeline Test Completed Successfully ===")
 
 if __name__ == '__main__':
+    unittest.main(exit=False)
     main()

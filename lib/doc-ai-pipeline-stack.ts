@@ -31,8 +31,9 @@ export class DocAiPipelineStack extends cdk.Stack {
 
     // Create S3 bucket with best practices
     this.sourceBucket = new s3.Bucket(this, 'SourceBucket', {
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      versioned: true,
+      bucketName: `${id}-source-${this.region}`.toLowerCase(),
+      removalPolicy: cdk.RemovalPolicy.DESTROY, // while testing, otherwise use cdk.RemovalPolicy.RETAIN
+      autoDeleteObjects: true, // while testing
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
@@ -63,11 +64,6 @@ export class DocAiPipelineStack extends cdk.Stack {
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
           cidrMask: 24,
         },
-        {
-          name: 'Isolated',
-          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
-          cidrMask: 24,
-        },
       ],
     });
 
@@ -93,6 +89,7 @@ export class DocAiPipelineStack extends cdk.Stack {
       fileSystem: this.fileSystem,
       containerPath: '/efs',
       useJobRole: true,
+      enableTransitEncryption: true,
     })
 
     // Create EFS access point for each processing stage
@@ -113,8 +110,15 @@ export class DocAiPipelineStack extends cdk.Stack {
     // Create Batch environment for CPU workloads
     const cpuComputeEnv = new batch.ManagedEc2EcsComputeEnvironment(this, 'CpuComputeEnv', {
       vpc: this.vpc,
-      maxvCpus: props.maxCpuVcpus ?? 16,
-      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM)],
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      maxvCpus: props.maxCpuVcpus ?? 2,
+      instanceTypes: [
+        // ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL)
+        ec2.InstanceType.of(ec2.InstanceClass.C5, ec2.InstanceSize.LARGE),
+        ec2.InstanceType.of(ec2.InstanceClass.C6A, ec2.InstanceSize.LARGE)
+      ],
       computeEnvironmentName: 'CpuEnv',
       spot: true,
     });
@@ -122,8 +126,15 @@ export class DocAiPipelineStack extends cdk.Stack {
     // Create Batch environment for GPU workloads
     const gpuComputeEnv = new batch.ManagedEc2EcsComputeEnvironment(this, 'GpuComputeEnv', {
       vpc: this.vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
       maxvCpus: props.maxGpuVcpus ?? 4,
-      instanceTypes: [ec2.InstanceType.of(ec2.InstanceClass.G4DN, ec2.InstanceSize.XLARGE)],
+      instanceTypes: [
+        // ec2.InstanceType.of(ec2.InstanceClass.G4DN, ec2.InstanceSize.XLARGE)
+        ec2.InstanceType.of(ec2.InstanceClass.G4DN, ec2.InstanceSize.XLARGE),
+        ec2.InstanceType.of(ec2.InstanceClass.G5, ec2.InstanceSize.XLARGE)
+      ],
       computeEnvironmentName: 'GpuEnv',
       spot: true,
       allocationStrategy: batch.AllocationStrategy.SPOT_CAPACITY_OPTIMIZED,
@@ -163,8 +174,8 @@ export class DocAiPipelineStack extends cdk.Stack {
     const preProcessingJobDefinition = new batch.EcsJobDefinition(this, 'PreprocessJobDef', {
       container: new batch.EcsEc2ContainerDefinition(this, 'PreprocessContainerDef', {
         image: ecs.ContainerImage.fromAsset('docker/preprocess'),
-        cpu: 2,
-        memory: cdk.Size.mebibytes(2048),
+        cpu: 1,
+        memory: cdk.Size.mebibytes(1024),
         jobRole: new iam.Role(this, 'PreprocessJobRole', {
           assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
           managedPolicies: [
@@ -241,8 +252,8 @@ export class DocAiPipelineStack extends cdk.Stack {
     const gpuJobDefinition = new batch.EcsJobDefinition(this, 'GpuJobDef', {
       container: new batch.EcsEc2ContainerDefinition(this, 'GpuContainerDef', {
         image: ecs.ContainerImage.fromAsset('docker/gpu'),
-        cpu: 8,
-        memory: cdk.Size.mebibytes(32768),
+        cpu: 4,
+        memory: cdk.Size.mebibytes(16384),
         jobRole: new iam.Role(this, 'GpuJobRole', {
           assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
           managedPolicies: [
@@ -302,8 +313,8 @@ export class DocAiPipelineStack extends cdk.Stack {
     const postProcessJobDef = new batch.EcsJobDefinition(this, 'PostprocessJobDef', {
       container: new batch.EcsEc2ContainerDefinition(this, 'PostprocessContainerDef', {
         image: ecs.ContainerImage.fromAsset('docker/postprocess'),
-        memory: cdk.Size.mebibytes(2048),
-        cpu: 2,
+        memory: cdk.Size.mebibytes(1024),
+        cpu: 1,
         jobRole: new iam.Role(this, 'PostprocessJobRole', {
           assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
           managedPolicies: [
@@ -380,9 +391,10 @@ export class DocAiPipelineStack extends cdk.Stack {
       .next(submitPostprocessJob);
 
     this.stateMachine = new stepfunctions.StateMachine(this, 'DocAiWorkflow', {
-      definition,
+      definitionBody: stepfunctions.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.hours(24),
       tracingEnabled: true,
+      stateMachineType: stepfunctions.StateMachineType.STANDARD,
       logs: {
         destination: logGroup,
         level: stepfunctions.LogLevel.ALL,
@@ -391,7 +403,7 @@ export class DocAiPipelineStack extends cdk.Stack {
     });
 
     // Create API Gateway with proper models and error responses
-    const api = new apigateway.RestApi(this, 'DocAiApi', {
+    this.api = new apigateway.RestApi(this, 'DocAiApi', {
       restApiName: 'Document AI Pipeline API',
       description: 'API for triggering document processing pipeline',
       deployOptions: {
@@ -409,59 +421,82 @@ export class DocAiPipelineStack extends cdk.Stack {
       },
     });
 
-    // Create request/response models
-    const requestModel = api.addModel('ProcessingRequest', {
-      contentType: 'application/json',
-      modelName: 'ProcessingRequest',
-      schema: {
-        type: apigateway.JsonSchemaType.OBJECT,
-        required: ['directory'],
-        properties: {
-          directory: {
-            type: apigateway.JsonSchemaType.STRING,
-            pattern: '^[a-zA-Z0-9-_/]+$',
-          },
-        },
-      },
+    // Create IAM role for API Gateway
+    const apiRole = new iam.Role(this, 'ApiRole', {
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
     });
 
-    // Add API resources and methods with validation
-    const processingResource = api.root.addResource('process');
-    const integration = apigateway.StepFunctionsIntegration.startExecution(this.stateMachine);
+    // Add CloudWatch Logs permissions
+    // apiRole.addToPolicy(new iam.PolicyStatement({
+    //   effect: iam.Effect.ALLOW,
+    //   actions: [
+    //     'logs:CreateLogGroup',
+    //     'logs:CreateLogStream',
+    //     'logs:DescribeLogGroups',
+    //     'logs:DescribeLogStreams',
+    //     'logs:PutLogEvents',
+    //     'logs:GetLogEvents',
+    //     'logs:FilterLogEvents'
+    //   ],
+    //   resources: ['*']  // or scope it to specific log groups if needed
+    // }));
+
+
+    this.stateMachine.grantStartExecution(apiRole);
+
+    // Add API resources and methods
+    const processingResource = this.api.root.addResource('process');
+    
+    const integration = new apigateway.AwsIntegration({
+      service: 'states',
+      action: 'StartExecution',
+      options: {
+        credentialsRole: apiRole,
+        requestTemplates: {
+          'application/json': JSON.stringify({
+            stateMachineArn: this.stateMachine.stateMachineArn,
+            input: "$util.escapeJavaScript($input.json('$'))"
+          })
+        },
+        integrationResponses: [
+          {
+            statusCode: '200',
+            responseTemplates: {
+              'application/json': JSON.stringify({
+                executionArn: "$util.parseJson($input.json('$')).executionArn",
+                startDate: "$util.parseJson($input.json('$')).startDate"
+              })
+            }
+          }
+        ]
+      }
+    });
     
     processingResource.addMethod('POST', integration, {
-      requestModels: {
-        'application/json': requestModel,
-      },
-      requestValidator: new apigateway.RequestValidator(this, 'ProcessingValidator', {
-        restApi: api,
-        validateRequestBody: true,
-      }),
       methodResponses: [
         {
           statusCode: '200',
           responseModels: {
-            'application/json': apigateway.Model.EMPTY_MODEL,
-          },
-        },
-        {
-          statusCode: '400',
-          responseModels: {
-            'application/json': apigateway.Model.ERROR_MODEL,
-          },
-        },
-        {
-          statusCode: '500',
-          responseModels: {
-            'application/json': apigateway.Model.ERROR_MODEL,
-          },
-        },
-      ],
+            'application/json': new apigateway.Model(this, 'ExecutionResponse', {
+              restApi: this.api,
+              contentType: 'application/json',
+              modelName: 'ExecutionResponse',
+              schema: {
+                type: apigateway.JsonSchemaType.OBJECT,
+                properties: {
+                  executionArn: { type: apigateway.JsonSchemaType.STRING },
+                  startDate: { type: apigateway.JsonSchemaType.STRING }
+                }
+              }
+            })
+          }
+        }
+      ]
     });
 
     // Output important resource information
     new cdk.CfnOutput(this, 'ApiEndpoint', {
-      value: api.url,
+      value: this.api.url,
       description: 'API Gateway endpoint URL',
     });
 
